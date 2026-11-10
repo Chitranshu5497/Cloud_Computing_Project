@@ -19,11 +19,12 @@ def _default(o):
 
 
 def handler(event, context):
-    """Return all images with labels and a temporary view URL."""
+    """Return all images with labels and a temporary view URL from Amazon Recognition service from aws"""
     items = table.scan().get("Items", [])
     items.sort(key=lambda i: i.get("uploadedAt", 0), reverse=True)
     for item in items:
         item["url"] = s3.generate_presigned_url(
+            print("printing presedigned url..")
             "get_object",
             Params={"Bucket": BUCKET, "Key": item["imageId"]},
             ExpiresIn=900,
