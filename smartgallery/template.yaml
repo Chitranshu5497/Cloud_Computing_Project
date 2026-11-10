@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SmartGallery - serverless image upload with automatic AI labeling
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref ImageTable
+        BUCKET_NAME: !Sub "${AWS::StackName}-images-${AWS::AccountId}"
+
+Resources:
+  ImageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-images-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [PUT, GET]
+            AllowedOrigins: ['*']
+            AllowedHeaders: ['*']
+
+  ImageTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: imageId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: imageId
+          KeyType: HASH
+
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: ['*']
+
+  UploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/upload_api/
+      Handler: app.handler
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-images-${AWS::AccountId}/uploads/*"
+      Events:
+        Upload:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /upload-url
+            Method: POST
+
+  ListFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/list_api/
+      Handler: app.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ImageTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-images-${AWS::AccountId}/uploads/*"
+      Events:
+        List:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /images
+            Method: GET
+
+  ProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/processor/
+      Handler: app.handler
+      Timeout: 60
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref ImageTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-images-${AWS::AccountId}/uploads/*"
+            - Effect: Allow
+              Action: rekognition:DetectLabels
+              Resource: '*'
+      Events:
+        NewImage:
+          Type: S3
+          Properties:
+            Bucket: !Ref ImageBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: uploads/
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      WebsiteConfiguration:
+        IndexDocument: index.html
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+
+Outputs:
+  ApiUrl:
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com"
+  WebsiteUrl:
+    Value: !GetAtt FrontendBucket.WebsiteURL
+  FrontendBucketName:
+    Value: !Ref FrontendBucket
+  ImageBucketName:
+    Value: !Ref ImageBucket
